@@ -25,14 +25,17 @@ const API_KEYS = {
   'deepseek': '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'
 };
 
+// Note: labels are the display names requested. IDs are the real OpenRouter
+// model slugs (gpt-5.5 / gemini-3.5-flash do not exist on OpenRouter and were
+// mapped to their closest live equivalents). Verify/swap in the admin Logs.
 const MODELS = [
   { brand: 'DeepSeek', label: 'DeepSeek V3',        id: 'deepseek/deepseek-chat' },
   { brand: 'DeepSeek', label: 'DeepSeek R1',        id: 'deepseek/deepseek-r1' },
   { brand: 'ChatGPT',  label: 'ChatGPT 4o',         id: 'openai/gpt-4o' },
   { brand: 'ChatGPT',  label: 'ChatGPT 4o-mini',    id: 'openai/gpt-4o-mini' },
-  { brand: 'ChatGPT',  label: 'ChatGPT 5.5',        id: 'openai/gpt-5.5' },
+  { brand: 'ChatGPT',  label: 'ChatGPT 5.5',        id: 'openai/gpt-5.4' },
   { brand: 'ChatGPT',  label: 'ChatGPT OSS-20B',    id: 'openai/gpt-oss-20b' },
-  { brand: 'Gemini',   label: 'Gemini 3.5 Flash',   id: 'google/gemini-3.5-flash' },
+  { brand: 'Gemini',   label: 'Gemini 3.5 Flash',   id: 'google/gemini-2.5-flash' },
   { brand: 'Gemini',   label: 'Gemini 2.5 Pro',     id: 'google/gemini-2.5-pro' }
 ];
 
@@ -58,6 +61,41 @@ const state = {
   unsub: null
 };
 
+/* ---------- Logging (real, visible in /admin) ---------- */
+const LOG_KEY = 'ecarena_logs';
+const LOG_MAX = 300;
+
+function maskKey(k) {
+  const s = String(k || '');
+  return s.length > 14 ? s.slice(0, 14) + '...' : s;
+}
+
+function loadLogs() {
+  try { return JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); }
+  catch (e) { return []; }
+}
+function saveLogs() {
+  try { localStorage.setItem(LOG_KEY, JSON.stringify(state.logs.slice(-LOG_MAX))); }
+  catch (e) {}
+}
+// level: 'info' | 'success' | 'warn' | 'error'; cat: category tag; detail: any object/string
+function addLog(level, cat, message, detail) {
+  const entry = {
+    ts: Date.now(),
+    level, cat,
+    message: String(message || ''),
+    detail: detail === undefined ? '' : (typeof detail === 'string' ? detail : JSON.stringify(detail))
+  };
+  state.logs.push(entry);
+  if (state.logs.length > LOG_MAX) state.logs = state.logs.slice(-LOG_MAX);
+  saveLogs();
+  // eslint-disable-next-line no-console
+  console.log(`[${level.toUpperCase()}][${cat}] ${message}`, detail === undefined ? '' : detail);
+  if (!adminOverlay || adminOverlay.classList.contains('hidden')) return;
+  renderLogs();
+}
+state.logs = loadLogs();
+
 /* ---------- DOM references ---------- */
 const $ = (id) => document.getElementById(id);
 const authOverlay   = $('authOverlay');
@@ -71,6 +109,11 @@ const adminClose     = $('adminClose');
 const broadcastInput = $('broadcastInput');
 const broadcastBtn   = $('broadcastBtn');
 const broadcastStatus= $('broadcastStatus');
+const logBox         = $('logBox');
+const logFilter      = $('logFilter');
+const logRefreshBtn  = $('logRefreshBtn');
+const logClearBtn    = $('logClearBtn');
+const logCopyBtn     = $('logCopyBtn');
 
 const backdrop   = $('backdrop');
 const sidebar    = $('sidebar');
@@ -157,23 +200,27 @@ async function handleAuth() {
   try {
     const cred = await signInAnonymously(auth);
     const uid = cred.user.uid;
+    addLog('info', 'auth', `Анонимная сессия Firebase создана  uid=${uid}`, null);
     const userRef = ref(database, `users/${username}`);
     const snap = await get(userRef);
 
     if (!snap.exists()) {
       await set(userRef, { password: password, uid: uid, createdAt: Date.now() });
+      addLog('success', 'auth', `Регистрация нового пользователя  user=${username}`, null);
       loginUser(username, rawName);
     } else {
       const data = snap.val();
       if (data.password === password) {
         await set(ref(database, `users/${username}/uid`), uid);
+        addLog('success', 'auth', `Вход выполнен  user=${username}`, null);
         loginUser(username, rawName);
       } else {
+        addLog('warn', 'auth', `Неверный пароль для пользователя ${username}`, null);
         authError.textContent = 'Неверный пароль';
       }
     }
   } catch (e) {
-    console.log('Auth error', e);
+    addLog('error', 'auth', 'Ошибка авторизации', String(e && e.code || e && e.message || e));
     authError.textContent = 'Ошибка авторизации. Повторите попытку.';
   } finally {
     authBtn.disabled = false;
@@ -256,8 +303,17 @@ async function deleteChat(id) {
 /* ---------- OpenRouter call with key routing + error masking ---------- */
 async function callModel(modelId, history) {
   const apiKey = getKeyForModel(modelId);
+  const keyLabel = maskKey(apiKey);
+  const bodyObj = { model: modelId, messages: history };
+
+  addLog('info', 'request', `POST /chat/completions  model=${modelId}  key=${keyLabel}  msgs=${history.length}`, {
+    model: modelId, key: keyLabel, messageCount: history.length,
+    messages: history.map(m => ({ role: m.role, len: String(m.content || '').length }))
+  });
+
+  let res;
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -265,24 +321,43 @@ async function callModel(modelId, history) {
         'HTTP-Referer': location.origin,
         'X-Title': 'ECArena'
       },
-      body: JSON.stringify({ model: modelId, messages: history })
+      body: JSON.stringify(bodyObj)
     });
-    if (!res.ok) {
-      const t = await res.text();
-      console.log('OpenRouter HTTP error', res.status, t);
-      throw new Error('http_' + res.status);
-    }
-    const data = await res.json();
-    const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    if (!content) {
-      console.log('OpenRouter empty content', JSON.stringify(data));
-      throw new Error('empty');
-    }
-    return content;
-  } catch (e) {
-    console.log('OpenRouter request failed', e);
+  } catch (netErr) {
+    // Network / CORS / DNS failure — the fetch itself never completed.
+    addLog('error', 'response', `NETWORK FAILURE  model=${modelId}`, String(netErr && netErr.message || netErr));
     return null;
   }
+
+  const rawText = await res.text().catch(() => '');
+  if (!res.ok) {
+    // Capture the REAL OpenRouter error body (status + message) for the admin.
+    let parsed = rawText;
+    try { parsed = JSON.parse(rawText); } catch (e) { /* keep raw text */ }
+    addLog('error', 'response', `HTTP ${res.status}  model=${modelId}`, parsed);
+    return null;
+  }
+
+  let data;
+  try { data = JSON.parse(rawText); }
+  catch (e) {
+    addLog('error', 'response', `BAD JSON  model=${modelId} (status ${res.status})`, rawText.slice(0, 500));
+    return null;
+  }
+
+  const choice = data && data.choices && data.choices[0];
+  const content = choice && choice.message && choice.message.content;
+  const usage = data && data.usage;
+
+  if (!content) {
+    addLog('warn', 'response', `EMPTY CONTENT  model=${modelId}`, data);
+    return null;
+  }
+
+  addLog('success', 'response',
+    `HTTP 200  model=${modelId}  tokens=${(usage && (usage.total_tokens || (usage.prompt_tokens + (usage.completion_tokens || 0)))) || '?'}`,
+    null);
+  return content;
 }
 
 /* ---------- Send flow ---------- */
@@ -331,6 +406,8 @@ async function handleSend() {
     const chatId = await ensureChat();
     const modelId = modelSelect.value;
 
+    addLog('info', 'chat', `Отправка сообщения  user=${state.currentUser}  model=${modelId}`, text.slice(0, 120));
+
     showLoading();
 
     await push(ref(database, `users/${state.currentUser}/chats/${chatId}/messages`), {
@@ -362,7 +439,7 @@ async function handleSend() {
       });
     }
   } catch (e) {
-    console.log('Send error', e);
+    addLog('error', 'chat', 'Необработанная ошибка отправки', String(e && e.message || e));
     hideLoading();
     try {
       await push(ref(database, `users/${state.currentUser}/chats/${state.currentChatId}/messages`), {
@@ -585,6 +662,7 @@ function renderMarkdown(text) {
 function openAdmin() {
   broadcastStatus.textContent = '';
   adminOverlay.classList.remove('hidden');
+  renderLogs();
 }
 function closeAdmin() {
   adminOverlay.classList.add('hidden');
@@ -595,11 +673,13 @@ async function handleBroadcast() {
   if (!text) { broadcastStatus.textContent = 'Текст рассылки пуст.'; return; }
   broadcastBtn.disabled = true;
   broadcastStatus.textContent = 'Выполняется рассылка...';
+  addLog('info', 'broadcast', 'Старт рассылки всем пользователям', text.slice(0, 120));
 
   let userCount = 0, chatCount = 0;
   try {
     const snap = await get(ref(database, 'users'));
     const users = snap.val() || {};
+    addLog('info', 'broadcast', `Прочитано пользователей из БД: ${Object.keys(users).length}`, null);
     for (const username of Object.keys(users)) {
       const chats = users[username] && users[username].chats;
       if (chats && typeof chats === 'object') {
@@ -615,12 +695,56 @@ async function handleBroadcast() {
       }
     }
     broadcastStatus.textContent = `Рассылка выполнена. Пользователей: ${userCount}. Чатов: ${chatCount}.`;
+    addLog('success', 'broadcast', `Рассылка завершена  пользователей=${userCount} чатов=${chatCount}`, null);
     broadcastInput.value = '';
   } catch (e) {
-    console.log('Broadcast error', e);
+    addLog('error', 'broadcast', 'Ошибка рассылки', String(e && e.code || e && e.message || e));
     broadcastStatus.textContent = 'Ошибка рассылки. Повторите попытку.';
   } finally {
     broadcastBtn.disabled = false;
+  }
+}
+
+/* ---------- Log viewer ---------- */
+function fmtTime(ts) {
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function renderLogs() {
+  if (!logBox) return;
+  const filter = (logFilter && logFilter.value) || 'all';
+  let list = state.logs.slice().reverse();
+  if (filter !== 'all') list = list.filter(l => l.cat === filter);
+
+  if (list.length === 0) {
+    logBox.innerHTML = '<div class="log-empty">Записей нет.</div>';
+    return;
+  }
+  logBox.innerHTML = list.map(l => {
+    const detailHtml = l.detail ? `<div class="log-detail">${escapeHtml(l.detail)}</div>` : '';
+    return `<div class="log-line log-${l.level}">
+      <span class="log-time">${fmtTime(l.ts)}</span>
+      <span class="log-tag">${l.level.toUpperCase()}</span>
+      <span class="log-cat">${l.cat}</span>
+      <span class="log-msg">${escapeHtml(l.message)}</span>
+      ${detailHtml}
+    </div>`;
+  }).join('');
+  logBox.scrollTop = 0;
+}
+function clearLogs() {
+  state.logs = [];
+  saveLogs();
+  renderLogs();
+}
+function copyLogs() {
+  const text = state.logs.slice().reverse()
+    .map(l => `[${fmtTime(l.ts)}][${l.level.toUpperCase()}][${l.cat}] ${l.message}${l.detail ? '\n    ' + l.detail : ''}`)
+    .join('\n');
+  const done = () => { logCopyBtn.textContent = 'Скопировано'; setTimeout(() => { logCopyBtn.textContent = 'Копировать логи'; }, 1400); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => {});
   }
 }
 
@@ -663,6 +787,11 @@ function bindEvents() {
 
   adminClose.addEventListener('click', closeAdmin);
   broadcastBtn.addEventListener('click', handleBroadcast);
+
+  logRefreshBtn.addEventListener('click', renderLogs);
+  logClearBtn.addEventListener('click', clearLogs);
+  logCopyBtn.addEventListener('click', copyLogs);
+  logFilter.addEventListener('change', renderLogs);
 }
 
 /* ---------- Init ---------- */
@@ -676,4 +805,4 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init);
 } else {
   init();
-  }
+              }
