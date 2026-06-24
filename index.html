@@ -90,6 +90,80 @@
   .admin-head h1 { text-align: left; margin: 0; }
   .broadcast-input { min-height: 170px; resize: vertical; margin-bottom: 14px; }
 
+  .card.wide { max-height: 92vh; overflow-y: auto; }
+
+  .logs-section {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid #e0e0e0;
+  }
+  .logs-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .logs-title { font-size: 13px; font-weight: 600; color: #2a2a2a; }
+  .log-filter {
+    border: 1px solid #c4c4c4;
+    background: #fff;
+    padding: 4px 6px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    border-radius: 0;
+    color: #1a1a1a;
+  }
+  .log-filter:focus { outline: none; border-color: #1a1a1a; }
+  .log-box {
+    background: #fafafa;
+    border: 1px solid #d8d8d8;
+    height: 230px;
+    overflow-y: auto;
+    font-family: "SF Mono", Consolas, "Courier New", monospace;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: #2a2a2a;
+  }
+  .log-line {
+    padding: 5px 9px;
+    border-bottom: 1px solid #efefef;
+    word-break: break-word;
+  }
+  .log-time { color: #8a8a8a; margin-right: 6px; }
+  .log-tag {
+    display: inline-block;
+    min-width: 48px;
+    font-weight: 600;
+    margin-right: 6px;
+    color: #555;
+  }
+  .log-error .log-tag { color: #7a1f1f; }
+  .log-success .log-tag { color: #2f5d3a; }
+  .log-warn .log-tag { color: #7a5b00; }
+  .log-cat {
+    color: #9a9a9a;
+    margin-right: 6px;
+    text-transform: lowercase;
+  }
+  .log-msg { color: #1a1a1a; }
+  .log-detail {
+    margin-top: 3px;
+    padding: 4px 6px;
+    background: #f0f0f0;
+    border-left: 2px solid #c4c4c4;
+    color: #555;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .log-error .log-detail { border-left-color: #7a1f1f; }
+  .log-empty { padding: 12px; text-align: center; color: #9a9a9a; }
+  .logs-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
   /* ---------- Sidebar drawer ---------- */
   .backdrop {
     position: fixed;
@@ -432,6 +506,26 @@
       <textarea id="broadcastInput" class="broadcast-input" placeholder="Текст рассылки"></textarea>
       <button id="broadcastBtn" class="btn-primary">Разослать всем</button>
       <div id="broadcastStatus" class="form-status"></div>
+
+      <div class="logs-section">
+        <div class="logs-head">
+          <span class="logs-title">Логи системы</span>
+          <select id="logFilter" class="log-filter" title="Фильтр">
+            <option value="all">Все</option>
+            <option value="request">Запросы</option>
+            <option value="response">Ответы</option>
+            <option value="chat">Чат</option>
+            <option value="auth">Авторизация</option>
+            <option value="broadcast">Рассылка</option>
+          </select>
+        </div>
+        <div id="logBox" class="log-box"></div>
+        <div class="logs-actions">
+          <button id="logRefreshBtn" class="btn-ghost" type="button">Обновить</button>
+          <button id="logCopyBtn" class="btn-ghost" type="button">Копировать логи</button>
+          <button id="logClearBtn" class="btn-ghost" type="button">Очистить</button>
+        </div>
+      </div>
     </div>
   </div>
 
